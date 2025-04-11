@@ -49,8 +49,8 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
     if reason_code == 0:
         logger.info("Connected to MQTT Broker")
         try:
-            client.subscribe(TOPIC_SUB_AUTH)
-            client.subscribe(TOPIC_SUB_CONFIRM)
+            client.subscribe(TOPIC_SUB_AUTH, qos=0)
+            client.subscribe(TOPIC_SUB_CONFIRM, qos=0)
             logger.info(f"Subscribed to topics: {TOPIC_SUB_AUTH}, {TOPIC_SUB_CONFIRM}")
         except Exception as e:
             logger.error(f"Subscription failed: {e}")
@@ -90,6 +90,21 @@ def on_message(client, userdata, msg):
         logger.error(f"Error while processing incoming message: {e}")
 
 # -------------------------------------------------------------------
+# Callback: When client disconnects from broker
+# -------------------------------------------------------------------
+def on_disconnect(client, userdata, rc, properties=None):
+    logger.warning("Disconnected from MQTT broker")
+    while True:
+        try:
+            logger.info("Attempting to reconnect...")
+            client.reconnect()
+            logger.info("Reconnected successfully")
+            break
+        except Exception as e:
+            logger.error(f"Reconnect failed: {e}")
+            time.sleep(5)  # Retry every 5 seconds
+
+# -------------------------------------------------------------------
 # Simulate NFC UID read
 # -------------------------------------------------------------------
 def simulate_nfc_uid():
@@ -126,16 +141,21 @@ def dispense_water(client):
         "updated_balance": round(balance, 2)
     })
 
-    client.publish(TOPIC_PUB_RESULT, message)
-    logger.info(f"Sent result to server: {message}")
+    if client.is_connected():
+        client.publish(TOPIC_PUB_RESULT, message)
+        logger.info(f"Sent result to server: {message}")
+    else:
+        logger.error("MQTT disconnected — skipping publish")
 
 # -------------------------------------------------------------------
 # Main Function
 # -------------------------------------------------------------------
 def main():
-    client = mqtt.Client(callback_api_version=CallbackAPIVersion.VERSION2)
+    client = mqtt.Client(callback_api_version=CallbackAPIVersion.VERSION2, clean_session=True)
+    client.max_queued_messages_set(0)
     client.on_connect = on_connect
     client.on_message = on_message
+    client.on_disconnect = on_disconnect
 
     # Enable TLS using system CA certificates
     client.tls_set(tls_version=ssl.PROTOCOL_TLS_CLIENT)
@@ -154,11 +174,14 @@ def main():
                 uid = simulate_nfc_uid()
                 message = json.dumps({"uid": uid})
                 logger.info(f"Publishing UID: {uid} to topic: {TOPIC_PUB_UID}")
-                result = client.publish(TOPIC_PUB_UID, message)
-                if result.rc == mqtt.MQTT_ERR_SUCCESS:
-                    logger.info("UID published successfully")
+                if client.is_connected():
+                    result = client.publish(TOPIC_PUB_UID, message, qos=0)
+                    if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                        logger.info("UID published successfully")
+                    else:
+                        logger.warning(f"Failed to publish UID. Status: {result.rc}")
                 else:
-                    logger.warning(f"Failed to publish UID. Status: {result.rc}")
+                    logger.error("MQTT disconnected — skipping publish")
             time.sleep(10)
     except KeyboardInterrupt:
         logger.info("Disconnecting...")
