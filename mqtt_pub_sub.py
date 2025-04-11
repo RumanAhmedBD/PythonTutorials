@@ -26,9 +26,10 @@ logging.basicConfig(
 # -------------------------------------------------------------------
 # MQTT Settings
 # -------------------------------------------------------------------
+# Put this information in a config file
 BROKER = "broker.emqx.io"  # Public broker (use your own for production)
 # Default Port
-#PORT = 1883
+# PORT = 1883
 PORT = 8883
 
 # Example topics (should be customized per device or environment)
