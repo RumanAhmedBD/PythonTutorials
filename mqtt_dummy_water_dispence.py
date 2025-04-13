@@ -30,7 +30,6 @@ logging.basicConfig(
 BROKER = "broker.emqx.io"  # Public broker (use your own for production)
 PORT = 8883  # TLS port
 
-# Example topics (should be customized per device or environment)
 DEVICE_ID = uuid.getnode()
 DEVICE_ID_STR = f"atm-{DEVICE_ID:012x}"
 TOPIC_PUB_UID = f"water_atm/{DEVICE_ID_STR}/uid"
@@ -38,7 +37,6 @@ TOPIC_PUB_RESULT = f"water_atm/{DEVICE_ID_STR}/result"
 TOPIC_SUB_AUTH = f"water_atm/{DEVICE_ID_STR}/auth"
 TOPIC_SUB_CONFIRM = f"water_atm/{DEVICE_ID_STR}/confirm"
 
-# Global state to track after auth
 authenticated = False
 balance = 0
 
@@ -63,6 +61,10 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
 def on_message(client, userdata, msg):
     global authenticated, balance
     try:
+        if msg.retain:
+            logger.warning("Retained message received. Ignoring.")
+            return
+
         payload = msg.payload.decode()
         logger.info(f"Received message on {msg.topic}: {payload}")
         data = json.loads(payload)
@@ -92,8 +94,12 @@ def on_message(client, userdata, msg):
 # -------------------------------------------------------------------
 # Callback: When client disconnects from broker
 # -------------------------------------------------------------------
-def on_disconnect(client, userdata, rc, properties=None):
-    logger.warning("Disconnected from MQTT broker")
+def on_disconnect(client, userdata, disconnect_flags, reason_code, properties=None):
+    if reason_code == mqtt.MQTT_ERR_SUCCESS:
+        logger.info("Disconnected cleanly from MQTT broker")
+        return
+
+    logger.warning("Disconnected unexpectedly from MQTT broker")
     while True:
         try:
             logger.info("Attempting to reconnect...")
@@ -102,7 +108,7 @@ def on_disconnect(client, userdata, rc, properties=None):
             break
         except Exception as e:
             logger.error(f"Reconnect failed: {e}")
-            time.sleep(5)  # Retry every 5 seconds
+            time.sleep(5)
 
 # -------------------------------------------------------------------
 # Simulate NFC UID read
@@ -117,24 +123,21 @@ def dispense_water(client):
     global balance
     logger.info("Starting water dispensing...")
 
-    # Simulate flow sensor pulses for 5 seconds
     total_pulses = 0
     duration = 5
     start_time = time.time()
 
     while time.time() - start_time < duration:
-        pulses = random.randint(1, 5)  # Simulated pulses per interval
+        pulses = random.randint(1, 5)
         total_pulses += pulses
         time.sleep(0.2)
 
-    # Simulate conversion (e.g., 1 pulse = 2 ml)
     water_dispensed_ml = total_pulses * 2
     water_dispensed_liters = round(water_dispensed_ml / 1000, 2)
 
     logger.info(f"Water dispensed: {water_dispensed_liters} L")
     balance -= water_dispensed_liters
-    if balance < 0:
-        balance = 0
+    balance = max(balance, 0)
 
     message = json.dumps({
         "dispensed": water_dispensed_liters,
@@ -142,8 +145,11 @@ def dispense_water(client):
     })
 
     if client.is_connected():
-        client.publish(TOPIC_PUB_RESULT, message)
-        logger.info(f"Sent result to server: {message}")
+        result = client.publish(TOPIC_PUB_RESULT, message, qos=0, retain=False)
+        if result.rc == mqtt.MQTT_ERR_SUCCESS:
+            logger.info(f"Sent result to server: {message}")
+        else:
+            logger.warning("Publish failed")
     else:
         logger.error("MQTT disconnected — skipping publish")
 
@@ -157,7 +163,6 @@ def main():
     client.on_message = on_message
     client.on_disconnect = on_disconnect
 
-    # Enable TLS using system CA certificates
     client.tls_set(tls_version=ssl.PROTOCOL_TLS_CLIENT)
 
     try:
@@ -175,7 +180,7 @@ def main():
                 message = json.dumps({"uid": uid})
                 logger.info(f"Publishing UID: {uid} to topic: {TOPIC_PUB_UID}")
                 if client.is_connected():
-                    result = client.publish(TOPIC_PUB_UID, message, qos=0)
+                    result = client.publish(TOPIC_PUB_UID, message, qos=0, retain=False)
                     if result.rc == mqtt.MQTT_ERR_SUCCESS:
                         logger.info("UID published successfully")
                     else:
